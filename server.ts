@@ -1,7 +1,9 @@
+// Vite import removed from top level to avoid bundling issues on Vercel
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import axios from 'axios';
 import pako from 'pako';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -204,14 +206,12 @@ app.get('/api/episodes', async (req, res) => {
   }
 });
 
-import path from 'path';
-import { fileURLToPath } from 'url';
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production' && process.env.VERCEL !== '1') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -234,6 +234,8 @@ async function startServer() {
   }
 }
 
-startServer();
+if (process.env.VERCEL !== '1') {
+  startServer();
+}
 
 export default app;
