@@ -133,6 +133,47 @@ app.get('/api/stream', async (req, res) => {
   }
 });
 
+app.get('/api/anisnatch', async (req, res) => {
+  try {
+    const { data } = await axios.get('https://anisnatch.top/dubbed', {
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': 'https://anisnatch.top/'
+      }
+    });
+
+    const cheerio = await import('cheerio');
+    const $ = cheerio.load(data);
+    
+    // Attempt to extract items if they exist
+    const items: any[] = [];
+    $('.item, .flw-item').each((_, el) => {
+      items.push({
+        title: $(el).find('.film-name, .dynamic-name').text().trim(),
+        url: $(el).find('.film-poster-ahref').attr('href'),
+        image: $(el).find('.film-poster-img').attr('data-src') || $(el).find('.film-poster-img').attr('src'),
+      });
+    });
+
+    // Check if cloudflare challenge is present
+    const isCloudflare = data.includes('__CF$cv$params') || data.includes('Just a moment');
+
+    res.json({
+      success: !isCloudflare && items.length > 0,
+      cloudflareBlocked: isCloudflare,
+      message: isCloudflare ? 'Request blocked by Cloudflare Anti-Bot challenge.' : 'Scraped successfully',
+      count: items.length,
+      data: items,
+      rawHtmlPreview: data.substring(0, 500)
+    });
+  } catch (error: any) {
+    console.error('Anisnatch Scraper Error:', error.message);
+    res.status(500).json({ error: 'Failed to scrape', details: error.message });
+  }
+});
+
 app.get('/api/episodes', async (req, res) => {
   const { id } = req.query;
   if (!id) return res.status(400).json({ error: 'Missing anime id parameter' });
@@ -153,12 +194,18 @@ app.get('/api/episodes', async (req, res) => {
     if (html.includes(prefix)) {
         const ssrStrMatch = html.split(prefix)[1];
         if (ssrStrMatch) {
-            const ssrJsonStr = ssrStrMatch.split(';</script>')[0];
+            let ssrJsonStr = ssrStrMatch.split('</script>')[0].trim();
+            if (ssrJsonStr.endsWith(';')) ssrJsonStr = ssrJsonStr.slice(0, -1);
             try {
                 const ssrObj = JSON.parse(ssrJsonStr);
                 totalEpisodes = ssrObj.episodes; // Extracted total episode count
                 animeTitle = ssrObj.title?.english || ssrObj.title?.romaji || ssrObj.title?.native;
-            } catch (e) {}
+                if (!totalEpisodes && ssrObj.nextAiringEpisode && ssrObj.nextAiringEpisode.episode) {
+                     totalEpisodes = ssrObj.nextAiringEpisode.episode - 1;
+                }
+            } catch (e) {
+                console.error('Failed to parse SSR Data:', e.message);
+            }
         }
     }
 
@@ -167,16 +214,41 @@ app.get('/api/episodes', async (req, res) => {
     const episodesData = await pipeFetch(epPayload, obfKey);
     
     // Merge episodes from available providers to get a comprehensive list. 
-    // Usually 'arc' or 'bee' has the most extensive mapped sets.
-    let mappedEpisodes: any[] = [];
+    // Aggregate data to track dub, sub, and filler status per episode.
+    const episodeMap = new Map<string, any>();
     
     const providersList = Object.values(episodesData.providers || {}) as any[];
     for (const prob of providersList) {
        for (const category of ['sub', 'dub']) {
           if (prob.episodes && prob.episodes[category]) {
-              const eplist = prob.episodes[category];
-              if (eplist.length > mappedEpisodes.length) {
-                  mappedEpisodes = eplist;
+              for (const ep of prob.episodes[category]) {
+                  const key = String(ep.number);
+                  
+                  if (!episodeMap.has(key)) {
+                      episodeMap.set(key, {
+                          episodeNumber: ep.number,
+                          title: ep.title || `Episode ${ep.number}`,
+                          image: ep.image || undefined,
+                          isSub: false,
+                          isDub: false,
+                          isFiller: !!ep.filler
+                      });
+                  }
+                  
+                  const existingEp = episodeMap.get(key);
+                  if (category === 'sub') existingEp.isSub = true;
+                  if (category === 'dub') existingEp.isDub = true;
+                  
+                  // Improve meta if we find better details from another provider
+                  if (ep.title && existingEp.title.startsWith('Episode')) {
+                      existingEp.title = ep.title;
+                  }
+                  if (ep.image && !existingEp.image) {
+                      existingEp.image = ep.image;
+                  }
+                  if (ep.filler) {
+                      existingEp.isFiller = true;
+                  }
               }
           }
        }
@@ -186,14 +258,30 @@ app.get('/api/episodes', async (req, res) => {
         totalEpisodes = episodesData.mappings.episodes;
     }
 
-    const outputEpisodes = mappedEpisodes.map(ep => ({
-       episodeNumber: ep.number,
-       title: ep.title || `Episode ${ep.number}`,
-       image: ep.image || undefined,
-    }));
+    const outputEpisodes = Array.from(episodeMap.values());
 
     // Optionally sort by episode number
-    outputEpisodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
+    outputEpisodes.sort((a, b) => Number(a.episodeNumber) - Number(b.episodeNumber));
+
+    // Ensure totalEpisodes reflects the highest integer episode number available, falling back to output count 
+    let maxEpNum = 0;
+    for (const ep of outputEpisodes) {
+        const epInt = Math.floor(Number(ep.episodeNumber));
+        if (epInt > maxEpNum && !isNaN(epInt)) {
+            maxEpNum = epInt;
+        }
+    }
+    
+    if (totalEpisodes == null) {
+        totalEpisodes = maxEpNum > 0 ? maxEpNum : outputEpisodes.length;
+    } else if (maxEpNum > totalEpisodes) {
+        // If the API provided max episodes is higher than what mappings say, we update it
+        totalEpisodes = maxEpNum;
+    } else if (totalEpisodes > maxEpNum && (totalEpisodes - maxEpNum > 10) && maxEpNum > 100) {
+        // If anilist/mappings says it's 1178 but we only have 1159 aired episodes,
+        // and the difference is large, it's likely counting OVA/recaps. We clamp to maxEpNum.
+        totalEpisodes = maxEpNum;
+    }
 
     res.json({
         totalEpisodes: totalEpisodes,
