@@ -1,0 +1,6 @@
+{
+  "name": "Miruro Scraper API",
+  "description": "Scrapes streaming servers and URLs from miruro.to given an AniList ID and episode number.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
