@@ -121,8 +121,17 @@ app.get('/api/stream', async (req, res) => {
     let sourcesData = await pipeFetch(srcPayload, obfKey);
     
     // Process sources to filter out embed URLs, only keeping HLS types
-    if (sourcesData && Array.isArray(sourcesData.streams)) {
-        sourcesData.streams = sourcesData.streams.filter((s: any) => s.type === 'hls');
+    if (sourcesData) {
+        if (Array.isArray(sourcesData.streams)) {
+            sourcesData.streams = sourcesData.streams.filter((s: any) => s.type !== 'embed');
+        } else {
+            // It might be organized by type like {"ssub": {"streams": [...]}}
+            for (const key of Object.keys(sourcesData)) {
+                if (sourcesData[key] && Array.isArray(sourcesData[key].streams)) {
+                    sourcesData[key].streams = sourcesData[key].streams.filter((s: any) => s.type !== 'embed');
+                }
+            }
+        }
     }
     
     // Return raw JSON representing the stream data structure
