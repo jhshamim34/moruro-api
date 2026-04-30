@@ -131,6 +131,11 @@ app.get('/api/stream', async (req, res) => {
                     sourcesData[key].streams = sourcesData[key].streams.filter((s: any) => s.type !== 'embed');
                 }
             }
+            // Remove wrapper object if it exists (e.g. ssub) to make format consistent
+            const keys = Object.keys(sourcesData);
+            if (keys.length === 1 && sourcesData[keys[0]] && Array.isArray(sourcesData[keys[0]].streams)) {
+                sourcesData = sourcesData[keys[0]];
+            }
         }
     }
     
